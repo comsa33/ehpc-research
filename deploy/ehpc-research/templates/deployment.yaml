@@ -38,11 +38,11 @@ spec:
         - name: TOKENIZERS_PARALLELISM
           value: "false"
         - name: PYTORCH_ENABLE_MPS_FALLBACK
-          value: 1
+          value: "1"
         - name: CUDA_LAUNCH_BLOCKING
-          value: 1
+          value: "1"
         - name: TORCH_USE_CUDA_DSA
-          value: 1
+          value: "1"
         - name: PYTHONPATH
           value: "/app"
         - name: CUDA_VISIBLE_DEVICES
