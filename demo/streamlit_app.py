@@ -6,6 +6,8 @@ import streamlit as st
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import time
+import torch
+import gc
 
 from core.prompt_compressor import EHPCCompressor
 from evaluation.benchmarks import EHPCBenchmark
@@ -19,16 +21,35 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 세션 상태 초기화
-if "compressor" not in st.session_state:
-    st.session_state.compressor = None
-if "initialized" not in st.session_state:
-    st.session_state.initialized = False
+# GPU 메모리 정리 함수
+def clear_gpu_memory():
+    """GPU 메모리 정리"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
 
+# 싱글턴 패턴으로 모델 관리
+@st.cache_resource
+def get_compressor(model_name: str):
+    """모델을 한 번만 로딩하는 싱글턴 패턴"""
+    clear_gpu_memory()  # 초기화 전 메모리 정리
+    return EHPCCompressor(model_name)
+
+# 세션 상태 초기화 (더 안전한 방식)
+def init_session_state():
+    if "current_model" not in st.session_state:
+        st.session_state.current_model = None
+    if "initialized" not in st.session_state:
+        st.session_state.initialized = False
+    if "evaluator_heads" not in st.session_state:
+        st.session_state.evaluator_heads = []
 
 def main():
     st.title("🚀 EHPC: Evaluator Head-based Prompt Compression")
     st.markdown("논문 'Efficient Prompt Compression with Evaluator Heads' 의 구현체")
+    
+    init_session_state()
 
     # 사이드바 - 설정
     with st.sidebar:
@@ -38,7 +59,7 @@ def main():
             "모델 선택",
             [
                 "microsoft/DialoGPT-medium",
-                "microsoft/DialoGPT-small",
+                "microsoft/DialoGPT-small", 
                 "gpt2",
                 "gpt2-medium",
             ],
@@ -47,15 +68,52 @@ def main():
 
         max_layers = st.slider("검사할 레이어 수", 1, 6, 3)
         heads_per_layer = st.slider("레이어당 헤드 수", 1, 4, 2)
+        
+        # GPU 상태 표시
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            gpu_allocated = torch.cuda.memory_allocated(0) / 1024**3
+            gpu_cached = torch.cuda.memory_reserved(0) / 1024**3
+            
+            st.info(f"""
+            **GPU 상태**
+            - 디바이스: {torch.cuda.get_device_name(0)}
+            - 총 메모리: {gpu_memory:.1f}GB
+            - 사용중: {gpu_allocated:.1f}GB
+            - 캐시됨: {gpu_cached:.1f}GB
+            """)
+        
+        # 메모리 정리 버튼
+        if st.button("🧹 GPU 메모리 정리"):
+            clear_gpu_memory()
+            st.success("✅ GPU 메모리가 정리되었습니다!")
+            st.rerun()
 
         if st.button("🔧 시스템 초기화", type="primary"):
             with st.spinner("Evaluator Heads를 찾는 중..."):
                 try:
-                    st.session_state.compressor = EHPCCompressor(model_name)
-                    evaluator_heads = st.session_state.compressor.initialize(
+                    # 모델 변경 시 기존 모델 정리
+                    if (st.session_state.current_model is not None and 
+                        st.session_state.current_model != model_name):
+                        clear_gpu_memory()
+                        st.cache_resource.clear()  # 캐시된 리소스 정리
+                    
+                    # 환경 변수 설정으로 CUDA 디버깅 활성화
+                    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+                    
+                    # 싱글턴 패턴으로 모델 로딩
+                    compressor = get_compressor(model_name)
+                    
+                    # 초기화 수행
+                    evaluator_heads = compressor.initialize(
                         max_layers=max_layers, heads_per_layer=heads_per_layer
                     )
+                    
+                    # 세션 상태 업데이트
+                    st.session_state.current_model = model_name
                     st.session_state.initialized = True
+                    st.session_state.evaluator_heads = evaluator_heads
+                    
                     st.success(f"✅ {len(evaluator_heads)}개의 Evaluator Heads 발견!")
 
                     # 발견된 헤드들 표시
@@ -66,10 +124,33 @@ def main():
 
                 except Exception as e:
                     st.error(f"❌ 초기화 실패: {e}")
+                    # 에러 발생 시 메모리 정리
+                    clear_gpu_memory()
+                    # 상세 에러 정보 표시
+                    if "CUDA" in str(e):
+                        st.error("""
+                        **CUDA 에러 해결 방법:**
+                        1. 'GPU 메모리 정리' 버튼 클릭
+                        2. 더 작은 모델 선택 (DialoGPT-small)
+                        3. 브라우저 새로고침 후 재시도
+                        """)
 
     # 메인 컨텐츠
     if not st.session_state.initialized:
         st.warning("⚠️ 먼저 사이드바에서 시스템을 초기화해주세요!")
+        
+        # 초기화 안내
+        st.info("""
+        **📋 사용 방법:**
+        1. 사이드바에서 모델과 설정을 선택
+        2. '시스템 초기화' 버튼을 클릭하여 Evaluator Heads 발견
+        3. 각 탭에서 기능 테스트
+        
+        **⚠️ GPU 메모리 부족 시:**
+        - 더 작은 모델 (DialoGPT-small) 선택
+        - 'GPU 메모리 정리' 버튼 사용
+        - 브라우저 새로고침
+        """)
         return
 
     # 탭 구성
@@ -104,8 +185,11 @@ def prompt_compression_tab():
     if st.button("🚀 압축 및 생성 실행", type="primary"):
         with st.spinner("처리 중..."):
             try:
+                # 현재 모델의 압축기 가져오기
+                compressor = get_compressor(st.session_state.current_model)
+                
                 start_time = time.time()
-                result = st.session_state.compressor.compress_and_generate(
+                result = compressor.compress_and_generate(
                     prompt,
                     compression_ratio=compression_ratio,
                     max_new_tokens=max_new_tokens,
@@ -170,6 +254,10 @@ def prompt_compression_tab():
 
             except Exception as e:
                 st.error(f"❌ 처리 실패: {e}")
+                if "CUDA" in str(e) or "memory" in str(e).lower():
+                    if st.button("🧹 에러 후 메모리 정리"):
+                        clear_gpu_memory()
+                        st.rerun()
 
 
 def benchmark_tab():
@@ -196,7 +284,9 @@ def benchmark_tab():
 
         with st.spinner("벤치마크 실행 중... (몇 분 소요될 수 있습니다)"):
             try:
-                benchmark = EHPCBenchmark(st.session_state.compressor)
+                # 현재 모델의 압축기 가져오기
+                compressor = get_compressor(st.session_state.current_model)
+                benchmark = EHPCBenchmark(compressor)
 
                 if benchmark_type == "QA (SQuAD)":
                     results = benchmark.run_qa_benchmark(
@@ -237,6 +327,10 @@ def benchmark_tab():
 
             except Exception as e:
                 st.error(f"❌ 벤치마크 실패: {e}")
+                if "CUDA" in str(e) or "memory" in str(e).lower():
+                    if st.button("🧹 벤치마크 에러 후 메모리 정리"):
+                        clear_gpu_memory()
+                        st.rerun()
 
 
 def visualization_tab():
@@ -255,8 +349,11 @@ def visualization_tab():
     if st.button("🎨 시각화 생성"):
         with st.spinner("분석 중..."):
             try:
+                # 현재 모델의 압축기 가져오기
+                compressor = get_compressor(st.session_state.current_model)
+                
                 # 압축 결과 얻기
-                compression_result = st.session_state.compressor.compress_prompt(
+                compression_result = compressor.compress_prompt(
                     viz_prompt, compression_ratio=viz_ratio
                 )
 
@@ -283,16 +380,16 @@ def visualization_tab():
                     )
 
                 # 압축 결과 텍스트
-                compressed_text = st.session_state.compressor.tokens_to_text(
+                compressed_text = compressor.tokens_to_text(
                     compression_result.compressed_tokens
                 )
 
                 st.subheader("📄 압축 결과")
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.text_area("원본", viz_prompt, height=100, disabled=True)
+                    st.text_area("원본 텍스트", viz_prompt, height=100, disabled=True, label_visibility="collapsed")
                 with col2:
-                    st.text_area("압축됨", compressed_text, height=100, disabled=True)
+                    st.text_area("압축된 텍스트", compressed_text, height=100, disabled=True, label_visibility="collapsed")
 
                 # 리포트 생성
                 report = visualizer.create_compression_report(compression_result)
@@ -301,6 +398,10 @@ def visualization_tab():
 
             except Exception as e:
                 st.error(f"❌ 시각화 실패: {e}")
+                if "CUDA" in str(e) or "memory" in str(e).lower():
+                    if st.button("🧹 시각화 에러 후 메모리 정리"):
+                        clear_gpu_memory()
+                        st.rerun()
 
 
 if __name__ == "__main__":

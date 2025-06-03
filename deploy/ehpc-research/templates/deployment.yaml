@@ -28,15 +28,23 @@ spec:
         - containerPort: 8501
         resources:
           limits:
-            cpu: "8"
-            memory: "10Gi"
+            memory: "20Gi"
             nvidia.com/gpu: "1"
           requests:
-            cpu: "2"
             memory: "4Gi"
         env:
         - name: TRANSFORMERS_VERBOSITY
-          value: "error"
+          value: "info"
         - name: TOKENIZERS_PARALLELISM
           value: "false"
+        - name: PYTORCH_ENABLE_MPS_FALLBACK
+          value: 1
+        - name: CUDA_LAUNCH_BLOCKING
+          value: 1
+        - name: TORCH_USE_CUDA_DSA
+          value: 1
+        - name: PYTHONPATH
+          value: "/app"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0" 
         

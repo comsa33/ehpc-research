@@ -38,7 +38,7 @@ class EvaluatorHeadFinder:
 
         logging.info(f"Loading model: {model_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-
+        
         # 디바이스 처리를 명확하게 수정
         if torch.cuda.is_available():
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -122,45 +122,65 @@ class EvaluatorHeadFinder:
         correct_predictions = 0
 
         for data in test_data:
-            text = data["text"]
-            needle = data["needle"]
+            try:
+                text = data["text"]
+                needle = data["needle"]
 
-            # 토큰화 및 디바이스로 이동
-            inputs = self.tokenizer(
-                text, return_tensors="pt", truncation=True, max_length=512
-            )
-            # 디바이스로 이동
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            tokens = self.tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
+                # 토큰화 및 디바이스로 이동
+                inputs = self.tokenizer(
+                    text, return_tensors="pt", truncation=True, max_length=512
+                )
+                # 디바이스로 이동
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                # 토큰 길이 체크
+                if inputs["input_ids"].size(1) == 0:
+                    continue
+                    
+                tokens = self.tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
 
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                attentions = outputs.attentions
+                with torch.no_grad():
+                    outputs = self.model(**inputs)
+                    attentions = outputs.attentions
 
-            if layer_idx < len(attentions):
-                # 특정 헤드의 attention 가져오기
-                attention = attentions[layer_idx][0, head_idx]  # [seq_len, seq_len]
+                if layer_idx < len(attentions) and head_idx < attentions[layer_idx].size(1):
+                    # 특정 헤드의 attention 가져오기
+                    attention = attentions[layer_idx][0, head_idx]  # [seq_len, seq_len]
+                    
+                    # 안전한 인덱스 체크
+                    if attention.size(0) == 0 or attention.size(1) == 0:
+                        continue
 
-                # needle 토큰들의 인덱스 찾기
-                needle_tokens = self.tokenizer.tokenize(needle)
-                needle_indices = []
+                    # needle 토큰들의 인덱스 찾기
+                    needle_tokens = self.tokenizer.tokenize(needle)
+                    needle_indices = []
 
-                for i, token in enumerate(tokens):
-                    if any(needle_token in token for needle_token in needle_tokens):
-                        needle_indices.append(i)
+                    for i, token in enumerate(tokens):
+                        if i < attention.size(0) and any(needle_token in token for needle_token in needle_tokens):
+                            needle_indices.append(i)
 
-                if needle_indices:
-                    # 마지막 토큰이 needle 토큰들에 높은 attention을 주는지 확인
-                    last_token_attention = attention[-1]  # 마지막 토큰의 attention
-                    needle_attention_sum = sum(
-                        last_token_attention[idx] for idx in needle_indices
-                    )
+                    if needle_indices and len(tokens) > 0:
+                        # 마지막 토큰 인덱스 안전하게 처리
+                        last_token_idx = min(len(tokens) - 1, attention.size(0) - 1)
+                        if last_token_idx >= 0:
+                            last_token_attention = attention[last_token_idx]  # 마지막 토큰의 attention
+                            
+                            # 인덱스 범위 체크
+                            valid_needle_indices = [idx for idx in needle_indices if idx < last_token_attention.size(0)]
+                            if valid_needle_indices:
+                                needle_attention_sum = sum(
+                                    last_token_attention[idx] for idx in valid_needle_indices
+                                )
 
-                    # 전체 attention 대비 needle에 대한 attention 비율
-                    if (
-                        needle_attention_sum / last_token_attention.sum() > 0.1
-                    ):  # 임계값
-                        correct_predictions += 1
+                                # 전체 attention 대비 needle에 대한 attention 비율
+                                total_attention = last_token_attention.sum()
+                                if total_attention > 0 and (needle_attention_sum / total_attention > 0.1):
+                                    correct_predictions += 1
+                                    
+            except (RuntimeError, IndexError, KeyError) as e:
+                # CUDA 에러나 인덱스 에러 발생시 해당 샘플 스킵
+                logging.warning(f"Error processing sample in head evaluation: {e}")
+                continue
 
         return correct_predictions / len(test_data) if test_data else 0.0
 
@@ -180,33 +200,49 @@ class EvaluatorHeadFinder:
         head_scores = []
 
         # 모델의 첫 몇 레이어만 검사 (논문에서 초기 레이어가 더 효과적)
-        # 수정: len() 제거하고 직접 값 사용
-        num_layers = min(
-            max_layers, self.model.config.to_dict().get("num_hidden_layers", 12)
-        )
-        num_heads = self.model.config.to_dict().get("num_attention_heads", 12)
+        try:
+            config_dict = self.model.config.to_dict()
+            num_layers = min(max_layers, config_dict.get("num_hidden_layers", 12))
+            num_heads = config_dict.get("num_attention_heads", 12)
+        except Exception as e:
+            logging.warning(f"Could not get model config: {e}. Using defaults.")
+            num_layers = min(max_layers, 6)  # 안전한 기본값
+            num_heads = 8
 
         logging.info(f"Checking {num_layers} layers with {num_heads} heads each...")
 
         for layer_idx in range(num_layers):
             for head_idx in range(num_heads):
-                # 각 헤드의 성능 점수 계산
-                performance_score = self.evaluate_head_performance(
-                    layer_idx, head_idx, test_data
-                )
+                try:
+                    # 각 헤드의 성능 점수 계산
+                    performance_score = self.evaluate_head_performance(
+                        layer_idx, head_idx, test_data
+                    )
 
-                # 추가적인 selectivity 점수 계산 (attention entropy 기반)
-                selectivity_score = self._calculate_head_selectivity(
-                    layer_idx, head_idx, test_data
-                )
+                    # 추가적인 selectivity 점수 계산 (attention entropy 기반)
+                    selectivity_score = self._calculate_head_selectivity(
+                        layer_idx, head_idx, test_data
+                    )
 
-                head_info = EvaluatorHeadInfo(
-                    layer=layer_idx,
-                    head=head_idx,
-                    selectivity_score=selectivity_score,
-                    confidence_score=performance_score,
-                )
-                head_scores.append(head_info)
+                    head_info = EvaluatorHeadInfo(
+                        layer=layer_idx,
+                        head=head_idx,
+                        selectivity_score=selectivity_score,
+                        confidence_score=performance_score,
+                    )
+                    head_scores.append(head_info)
+                    
+                except Exception as e:
+                    logging.warning(f"Error evaluating head {layer_idx}-{head_idx}: {e}")
+                    continue
+
+        if not head_scores:
+            # 백업: 최소한 첫 번째 레이어의 첫 번째 헤드라도 선택
+            logging.warning("No valid heads found, using default head")
+            default_head = EvaluatorHeadInfo(
+                layer=0, head=0, selectivity_score=0.5, confidence_score=0.1
+            )
+            return [default_head]
 
         # 성능 순으로 정렬하고 각 레이어에서 최고 헤드들 선택
         head_scores.sort(
@@ -222,6 +258,10 @@ class EvaluatorHeadFinder:
             if layer_counts.get(layer, 0) < heads_per_layer:
                 selected_heads.append(head_info)
                 layer_counts[layer] = layer_counts.get(layer, 0) + 1
+
+        # 최소한 하나의 헤드는 선택되도록 보장
+        if not selected_heads and head_scores:
+            selected_heads = [head_scores[0]]
 
         logging.info(f"Selected {len(selected_heads)} evaluator heads:")
         for head in selected_heads:
@@ -239,26 +279,45 @@ class EvaluatorHeadFinder:
         valid_samples = 0
 
         for data in test_data[:10]:  # 샘플링하여 계산 속도 향상
-            text = data["text"]
-            inputs = self.tokenizer(
-                text, return_tensors="pt", truncation=True, max_length=512
-            )
-            # 디바이스로 이동
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                attentions = outputs.attentions
-
-            if layer_idx < len(attentions):
-                attention = attentions[layer_idx][0, head_idx]
-
-                # 각 쿼리 위치에서 attention distribution의 entropy 계산
-                attention_probs = torch.softmax(attention, dim=-1)
-                entropy = -torch.sum(
-                    attention_probs * torch.log(attention_probs + 1e-12), dim=-1
+            try:
+                text = data["text"]
+                inputs = self.tokenizer(
+                    text, return_tensors="pt", truncation=True, max_length=512
                 )
-                total_entropy += entropy.mean().item()
-                valid_samples += 1
+                # 디바이스로 이동
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                # 토큰 길이 체크
+                if inputs["input_ids"].size(1) == 0:
+                    continue
+
+                with torch.no_grad():
+                    outputs = self.model(**inputs)
+                    attentions = outputs.attentions
+
+                if (layer_idx < len(attentions) and 
+                    head_idx < attentions[layer_idx].size(1)):
+                    
+                    attention = attentions[layer_idx][0, head_idx]
+                    
+                    # 안전한 크기 체크
+                    if attention.size(0) > 0 and attention.size(1) > 0:
+                        # 각 쿼리 위치에서 attention distribution의 entropy 계산
+                        attention_probs = torch.softmax(attention, dim=-1)
+                        
+                        # NaN이나 무한값 체크
+                        if torch.isfinite(attention_probs).all():
+                            entropy = -torch.sum(
+                                attention_probs * torch.log(attention_probs + 1e-12), dim=-1
+                            )
+                            
+                            if torch.isfinite(entropy).all():
+                                total_entropy += entropy.mean().item()
+                                valid_samples += 1
+                                
+            except (RuntimeError, IndexError, KeyError) as e:
+                # 에러 발생시 해당 샘플 스킵
+                logging.warning(f"Error processing sample in selectivity calculation: {e}")
+                continue
 
         return total_entropy / valid_samples if valid_samples > 0 else 1.0
