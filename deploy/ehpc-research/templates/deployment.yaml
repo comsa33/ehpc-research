@@ -19,7 +19,7 @@ spec:
       runtimeClassName: nvidia
       nodeSelector:
         "kubernetes.io/os": linux
-        "kubernetes.io/hostname": ruo-server3
+        "kubernetes.io/hostname": ruo-server2
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
