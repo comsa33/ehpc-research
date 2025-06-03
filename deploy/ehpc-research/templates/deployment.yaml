@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+    spec:
+      runtimeClassName: nvidia
+      nodeSelector:
+        "kubernetes.io/os": linux
+        "kubernetes.io/hostname": ruo-server3
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: 8878
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        resources:
+          limits:
+            cpu: "8"
+            memory: "10Gi"
+            nvidia.com/gpu: "1"
+          requests:
+            cpu: "2"
+            memory: "4Gi"
+        env:
+        - name: TRANSFORMERS_VERBOSITY
+          value: "error"
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        

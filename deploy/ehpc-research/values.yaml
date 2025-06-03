@@ -1,0 +1,17 @@
+# Default values for retriever.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+namespace: ehpc-research
+
+replicaCount: 1
+
+image:
+  repository: 192.168.0.5:5000/ehpc-research
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+service:
+  type: LoadBalancer
+  port: 8501
