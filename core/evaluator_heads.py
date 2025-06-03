@@ -38,12 +38,22 @@ class EvaluatorHeadFinder:
 
         logging.info(f"Loading model: {model_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            output_attentions=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
-        )
+
+        # 디바이스 처리를 명확하게 수정
+        if torch.cuda.is_available():
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                output_attentions=True,
+                torch_dtype=torch.float16,
+                attn_implementation="eager",  # attention 구현 명시
+            ).to(self.device)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                output_attentions=True,
+                torch_dtype=torch.float32,
+                attn_implementation="eager",  # attention 구현 명시
+            )
 
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -115,10 +125,12 @@ class EvaluatorHeadFinder:
             text = data["text"]
             needle = data["needle"]
 
-            # 토큰화
+            # 토큰화 및 디바이스로 이동
             inputs = self.tokenizer(
                 text, return_tensors="pt", truncation=True, max_length=512
             )
+            # 디바이스로 이동
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
             tokens = self.tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
 
             with torch.no_grad():
@@ -168,10 +180,13 @@ class EvaluatorHeadFinder:
         head_scores = []
 
         # 모델의 첫 몇 레이어만 검사 (논문에서 초기 레이어가 더 효과적)
+        # 수정: len() 제거하고 직접 값 사용
         num_layers = min(
-            max_layers, len(self.model.config.to_dict().get("num_hidden_layers", 12))
+            max_layers, self.model.config.to_dict().get("num_hidden_layers", 12)
         )
         num_heads = self.model.config.to_dict().get("num_attention_heads", 12)
+
+        logging.info(f"Checking {num_layers} layers with {num_heads} heads each...")
 
         for layer_idx in range(num_layers):
             for head_idx in range(num_heads):
@@ -228,6 +243,8 @@ class EvaluatorHeadFinder:
             inputs = self.tokenizer(
                 text, return_tensors="pt", truncation=True, max_length=512
             )
+            # 디바이스로 이동
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
             with torch.no_grad():
                 outputs = self.model(**inputs)

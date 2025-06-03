@@ -135,24 +135,37 @@ def prompt_compression_tab():
                 with col1:
                     st.subheader("📄 원본 프롬프트")
                     st.text_area(
-                        "", value=result["original_text"], height=200, disabled=True
+                        "원본 텍스트",
+                        value=result["original_text"],
+                        height=200,
+                        disabled=True,
+                        label_visibility="collapsed",
                     )
                     st.subheader("🤖 원본 응답")
                     st.text_area(
-                        "", value=result["original_response"], height=150, disabled=True
+                        "원본 응답",
+                        value=result["original_response"],
+                        height=150,
+                        disabled=True,
+                        label_visibility="collapsed",
                     )
 
                 with col2:
                     st.subheader("📄 압축된 프롬프트")
                     st.text_area(
-                        "", value=result["compressed_text"], height=200, disabled=True
+                        "압축된 텍스트",
+                        value=result["compressed_text"],
+                        height=200,
+                        disabled=True,
+                        label_visibility="collapsed",
                     )
                     st.subheader("🤖 압축된 응답")
                     st.text_area(
-                        "",
+                        "압축된 응답",
                         value=result["compressed_response"],
                         height=150,
                         disabled=True,
+                        label_visibility="collapsed",
                     )
 
             except Exception as e:

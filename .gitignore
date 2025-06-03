@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Streamlit
+.streamlit/secrets.toml
+
+# EHPC 실험 결과
+*.json
+experiment_log.txt
+*.png
+
+# 데이터셋 캐시
+.cache/
+datasets/

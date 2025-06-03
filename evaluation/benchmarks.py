@@ -1,12 +1,17 @@
 import logging
+import os
+import sys
 from typing import Any, Dict, List
+
+# 상대 임포트 문제 해결을 위한 경로 추가
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import evaluate
 import numpy as np
 from datasets import load_dataset
 from tqdm import tqdm
 
-from ..core.prompt_compressor import EHPCCompressor
+from core.prompt_compressor import EHPCCompressor
 
 
 class EHPCBenchmark:

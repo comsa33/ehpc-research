@@ -1,10 +1,15 @@
 import logging
+import re
 from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
 
-from .evaluator_heads import CompressionResult, EvaluatorHeadFinder, EvaluatorHeadInfo
+from core.evaluator_heads import (
+    CompressionResult,  # 절대 임포트로 변경
+    EvaluatorHeadFinder,
+    EvaluatorHeadInfo,
+)
 
 
 class EHPCCompressor:
@@ -45,10 +50,12 @@ class EHPCCompressor:
                 "compress_prompt를 호출하기 전에 initialize()를 먼저 호출해야 합니다."
             )
 
-        # 토큰화
+        # 토큰화 및 디바이스로 이동
         inputs = self.head_finder.tokenizer(
             text, return_tensors="pt", truncation=True, max_length=2048
         )
+        # 디바이스로 이동
+        inputs = {k: v.to(self.head_finder.device) for k, v in inputs.items()}
 
         tokens = self.head_finder.tokenizer.convert_ids_to_tokens(
             inputs["input_ids"][0]
@@ -187,6 +194,10 @@ class EHPCCompressor:
         original_inputs = self.head_finder.tokenizer(
             text, return_tensors="pt", truncation=True, max_length=1024
         )
+        # 디바이스로 이동
+        original_inputs = {
+            k: v.to(self.head_finder.device) for k, v in original_inputs.items()
+        }
 
         with torch.no_grad():
             original_outputs = self.head_finder.model.generate(
@@ -208,6 +219,10 @@ class EHPCCompressor:
         compressed_inputs = self.head_finder.tokenizer(
             compressed_text, return_tensors="pt", truncation=True, max_length=1024
         )
+        # 디바이스로 이동
+        compressed_inputs = {
+            k: v.to(self.head_finder.device) for k, v in compressed_inputs.items()
+        }
 
         with torch.no_grad():
             compressed_outputs = self.head_finder.model.generate(

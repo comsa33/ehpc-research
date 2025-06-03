@@ -1,0 +1,12 @@
+[server]
+# 파일 변경 감시 비활성화하여 torch.classes 에러 방지
+runOnSave = false
+fileWatcherType = "none"
+
+[client]
+# 사용 통계 수집 비활성화
+gatherUsageStats = false
+
+[logger]
+# 로그 레벨 조정
+level = "error"
