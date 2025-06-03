@@ -25,10 +25,7 @@ spec:
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
-        - containerPort: 8878
-        volumeMounts:
-        - name: data-volume
-          mountPath: /app/data
+        - containerPort: 8501
         resources:
           limits:
             cpu: "8"
