@@ -253,7 +253,7 @@ class EvaluatorHeadFinder:
             raise
 
     def _load_model(self):
-        """최적화된 모델 로딩"""
+        """최적화된 모델 로딩 (Meta Tensor 문제 해결)"""
         try:
             # Hugging Face 인증 처리
             token = self._get_hf_token()
@@ -261,8 +261,11 @@ class EvaluatorHeadFinder:
             model_kwargs = {
                 "output_attentions": True,
                 "trust_remote_code": True,
-                "attn_implementation": "eager",  # 안정성 우선
-                "token": token,  # 인증 토큰 추가
+                "attn_implementation": "eager",
+                "token": token,
+                # Meta Tensor 문제 해결을 위한 설정
+                "torch_dtype": torch.float32,  # 명시적 dtype 설정
+                "low_cpu_mem_usage": False,    # Meta tensor 사용 비활성화
             }
 
             # 양자화 설정 (CUDA에서만)
@@ -271,7 +274,6 @@ class EvaluatorHeadFinder:
                 and "cuda" in self.device
                 and self._is_quantization_available()
             ):
-
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                     bnb_8bit_compute_dtype=torch.float16,
@@ -279,7 +281,9 @@ class EvaluatorHeadFinder:
                 )
                 model_kwargs["quantization_config"] = quantization_config
                 model_kwargs["torch_dtype"] = torch.float16
-                logging.info("🔧 8bit 양자화 적용")
+                # 양자화 시에도 Meta tensor 비활성화
+                model_kwargs["low_cpu_mem_usage"] = False
+                logging.info("🔧 8bit 양자화 적용 (Meta tensor 비활성화)")
 
             elif "mps" in self.device:
                 model_kwargs["torch_dtype"] = torch.float16
@@ -289,13 +293,27 @@ class EvaluatorHeadFinder:
                 logging.info("💻 CPU용 float32 설정")
 
             # 모델 로드
+            logging.info(f"📚 모델 로딩 시작: {self.model_name}")
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name, **model_kwargs
             )
 
-            # 디바이스로 이동 (양자화되지 않은 경우만)
+            # 디바이스로 안전하게 이동
             if "quantization_config" not in model_kwargs:
-                self.model = self.model.to(self.device)
+                try:
+                    # Meta tensor 문제 해결을 위한 안전한 디바이스 이동
+                    if hasattr(self.model, 'to_empty'):
+                        # PyTorch 2.0+ 방식
+                        self.model = self.model.to_empty(device=self.device)
+                        logging.info(f"✅ to_empty()로 디바이스 이동: {self.device}")
+                    else:
+                        # 기존 방식
+                        self.model = self.model.to(self.device)
+                        logging.info(f"✅ to()로 디바이스 이동: {self.device}")
+                except Exception as e:
+                    logging.warning(f"⚠️ 디바이스 이동 실패, CPU로 폴백: {e}")
+                    self.device = "cpu"
+                    self.model = self.model.to("cpu")
 
         except Exception as e:
             logging.warning(f"⚠️ 모델 로딩 실패, 폴백 시도: {e}")
@@ -320,31 +338,68 @@ class EvaluatorHeadFinder:
                     # 원래 모델명 복구 후 일반 폴백으로 넘어감
                     self.model_name = original_model
 
+            # Meta tensor 관련 오류면 특별 처리
+            if "meta tensor" in str(e).lower():
+                logging.info("🔧 Meta tensor 문제 감지, 대안 로딩 방식 시도")
+                self._load_model_alternative()
+                return
+
             self._load_fallback_model()
 
-    def _is_quantization_available(self) -> bool:
-        """양자화 라이브러리 사용 가능 여부 확인"""
+    def _load_model_alternative(self):
+        """Meta tensor 문제를 위한 대안 로딩 방식"""
         try:
-            import bitsandbytes
-
-            return True
-        except ImportError:
-            logging.warning("⚠️ bitsandbytes 라이브러리 없음, 양자화 비활성화")
-            return False
+            token = self._get_hf_token()
+            
+            # 가장 안전한 설정으로 재시도
+            model_kwargs = {
+                "output_attentions": True,
+                "trust_remote_code": True,
+                "torch_dtype": torch.float32,
+                "low_cpu_mem_usage": False,
+                "device_map": None,  # 수동 디바이스 관리
+                "token": token,
+            }
+            
+            logging.info("🔄 대안 방식으로 모델 로딩 중...")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, **model_kwargs
+            )
+            
+            # CPU에서 로드 후 수동으로 이동
+            if self.device != "cpu":
+                logging.info(f"📦 CPU에서 로드 후 {self.device}로 이동 중...")
+                self.model = self.model.to(self.device)
+            
+            logging.info("✅ 대안 방식 로딩 성공")
+            
+        except Exception as e:
+            logging.error(f"❌ 대안 방식도 실패: {e}")
+            raise e
 
     def _load_fallback_model(self):
-        """폴백 모델 로딩"""
-        fallback_models = ["google/gemma-2-2b", "microsoft/DialoGPT-medium", "gpt2"]
+        """폴백 모델 로딩 (Meta tensor 문제 해결 포함)"""
+        # 접근 가능한 폴백 모델들 (gated 모델 제외)
+        fallback_models = [
+            "microsoft/DialoGPT-medium",
+            "gpt2", 
+            "distilgpt2"  # 더 가벼운 옵션 추가
+        ]
 
         for fallback in fallback_models:
             try:
                 logging.info(f"🔄 폴백 모델 시도: {fallback}")
 
+                # Meta tensor 문제 방지를 위한 안전한 설정
+                model_kwargs = {
+                    "output_attentions": True,
+                    "torch_dtype": torch.float32,
+                    "low_cpu_mem_usage": False,
+                    "device_map": None,
+                }
+
                 self.model = AutoModelForCausalLM.from_pretrained(
-                    fallback,
-                    output_attentions=True,
-                    torch_dtype=torch.float32,
-                    attn_implementation="eager",
+                    fallback, **model_kwargs
                 )
 
                 # 토크나이저도 다시 로드
@@ -352,6 +407,7 @@ class EvaluatorHeadFinder:
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
 
+                # 안전한 디바이스 이동
                 self.model = self.model.to(self.device)
                 self.model_name = fallback
                 self.model_config = ModelConfig.SUPPORTED_MODELS.get(fallback, {})
@@ -364,6 +420,16 @@ class EvaluatorHeadFinder:
                 continue
 
         raise RuntimeError("❌ 모든 모델 로딩 시도 실패")
+
+    def _is_quantization_available(self) -> bool:
+        """양자화 라이브러리 사용 가능 여부 확인"""
+        try:
+            import bitsandbytes
+
+            return True
+        except ImportError:
+            logging.warning("⚠️ bitsandbytes 라이브러리 없음, 양자화 비활성화")
+            return False
 
     def _get_model_stats(self) -> str:
         """모델 통계 정보"""

@@ -43,8 +43,14 @@ spec:
           value: "1"
         - name: CUDA_LAUNCH_BLOCKING
           value: "1"
+        - name: TRANSFORMERS_OFFLINE
+          value: "false"
+        - name: HF_DATASETS_OFFLINE  
+          value: "false"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
         - name: TORCH_USE_CUDA_DSA
-          value: "1"
+          value: "0"
         - name: PYTHONPATH
           value: "/app"
         - name: CUDA_VISIBLE_DEVICES
