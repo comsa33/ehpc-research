@@ -5,11 +5,12 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import torch
 
-from .evaluator_heads import (
+from core.evaluator_heads import (
     CompressionResult,
     EvaluatorHeadFinder,
     EvaluatorHeadInfo,
     get_recommended_model,
+    safe_tokenize,
 )
 
 
@@ -123,12 +124,12 @@ class EHPCCompressor:
         model_max_length = self.head_finder.model_config.get("context_length", 2048)
         effective_max_length = min(model_max_length, max_tokens or 2048)
 
-        inputs = self.head_finder.tokenizer(
+        inputs = safe_tokenize(
+            self.head_finder.tokenizer,
             text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=effective_max_length,
-            padding=False,
+            model_name=self.model_name,
+            model_config=self.head_finder.model_config,
+            max_length=effective_max_length
         )
 
         # 디바이스로 이동
@@ -449,27 +450,45 @@ class EHPCCompressor:
     def _generate_response(
         self, text: str, max_new_tokens: int, temperature: float, do_sample: bool
     ) -> Dict:
-        """응답 생성 (시간 측정 포함)"""
+        """응답 생성 (시간 측정 포함) - KoAlpaca 호환성 개선"""
         import time
 
         start_time = time.time()
 
         try:
-            inputs = self.head_finder.tokenizer(
-                text, return_tensors="pt", truncation=True, max_length=1024
+            inputs = safe_tokenize(
+                self.head_finder.tokenizer,
+                text,
+                model_name=self.model_name,
+                model_config=self.head_finder.model_config,
+                max_length=1024
             )
+            
             inputs = {k: v.to(self.head_finder.device) for k, v in inputs.items()}
             input_tokens = inputs["input_ids"].size(1)
 
             with torch.no_grad():
+                # KoAlpaca 모델 특화 생성 설정
+                generation_kwargs = {
+                    "max_new_tokens": max_new_tokens,
+                    "temperature": temperature,
+                    "do_sample": do_sample,
+                    "pad_token_id": self.head_finder.tokenizer.eos_token_id,
+                    "eos_token_id": self.head_finder.tokenizer.eos_token_id,
+                    "repetition_penalty": 1.1,
+                }
+                
+                # KoAlpaca 모델인 경우 추가 설정
+                if "koalpaca" in self.model_name.lower():
+                    generation_kwargs.update({
+                        "top_p": 0.95,
+                        "top_k": 50,
+                        "no_repeat_ngram_size": 3,
+                    })
+                
                 outputs = self.head_finder.model.generate(
                     **inputs,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    do_sample=do_sample,
-                    pad_token_id=self.head_finder.tokenizer.eos_token_id,
-                    eos_token_id=self.head_finder.tokenizer.eos_token_id,
-                    repetition_penalty=1.1,  # 반복 방지
+                    **generation_kwargs
                 )
 
             response = self.head_finder.tokenizer.decode(

@@ -8,6 +8,78 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
+def safe_tokenize(tokenizer, text, model_name="", model_config=None, **kwargs):
+    """
+    모델별 호환성을 고려한 안전한 토큰화 함수 (개선 버전)
+    
+    Args:
+        tokenizer: HuggingFace 토크나이저
+        text: 토큰화할 텍스트
+        model_name: 모델 이름 (특수 처리용)
+        model_config: 모델 설정 정보 (ModelConfig에서 가져온)
+        **kwargs: 추가 토크나이저 옵션
+    
+    Returns:
+        Dict: 모델이 지원하는 키만 포함된 토큰화 결과
+    """
+    # 기본 토큰화 옵션
+    tokenize_kwargs = {
+        "return_tensors": "pt",
+        "truncation": True,
+        "padding": False,
+        "return_token_type_ids": False,  # 기본적으로 비활성화
+        **kwargs
+    }
+    
+    # ModelConfig 정보가 있으면 우선 사용
+    if model_config and "tokenizer_config" in model_config:
+        tokenizer_config = model_config["tokenizer_config"]
+        tokenize_kwargs["return_token_type_ids"] = tokenizer_config.get(
+            "supports_token_type_ids", False
+        )
+    else:
+        # 폴백: 모델 이름 기반 판단
+        model_name_lower = model_name.lower()
+        
+        if "koalpaca" in model_name_lower or "polyglot" in model_name_lower:
+            tokenize_kwargs["return_token_type_ids"] = False
+        elif "bert" in model_name_lower:
+            tokenize_kwargs["return_token_type_ids"] = True
+        elif any(name in model_name_lower for name in ["gpt", "llama", "qwen", "gemma", "phi"]):
+            tokenize_kwargs["return_token_type_ids"] = False
+    
+    try:
+        # 토큰화 실행
+        inputs = tokenizer(text, **tokenize_kwargs)
+        
+        # 모델이 지원하는 키만 필터링
+        supported_keys = {'input_ids', 'attention_mask'}
+        
+        # token_type_ids 지원 여부에 따라 추가
+        if tokenize_kwargs.get("return_token_type_ids", False):
+            supported_keys.add('token_type_ids')
+        
+        # 필터링된 결과 반환
+        filtered_inputs = {k: v for k, v in inputs.items() if k in supported_keys}
+        
+        logging.debug(f"토큰화 성공: {model_name}, 키: {list(filtered_inputs.keys())}")
+        return filtered_inputs
+        
+    except Exception as e:
+        logging.warning(f"토큰화 실패 {model_name}: {e}")
+        # 최소한의 안전한 설정으로 재시도
+        safe_kwargs = {
+            "return_tensors": "pt",
+            "truncation": True,
+            "padding": False,
+            "return_token_type_ids": False,
+            "max_length": kwargs.get("max_length", 512),
+        }
+        
+        inputs = tokenizer(text, **safe_kwargs)
+        return {k: v for k, v in inputs.items() if k in {'input_ids', 'attention_mask'}}
+
+
 @dataclass
 class EvaluatorHeadInfo:
     """Evaluator Head 정보를 담는 데이터클래스"""
@@ -52,6 +124,11 @@ class ModelConfig:
             "pros": ["한국어 지원 우수", "효율적", "최신 기술"],
             "cons": ["중국 회사 모델"],
             "korean_support": 5,
+            "tokenizer_config": {  # 이 부분 추가
+                "supports_token_type_ids": False,
+                "requires_special_tokens": True,
+                "chat_template_needed": False,
+            }
         },
         "meta-llama/Llama-3.2-3B-Instruct": {
             "params": "3B",
@@ -77,9 +154,14 @@ class ModelConfig:
             "min_memory_gb": 12,
             "quantize": True,
             "context_length": 2048,
-            "pros": ["한국어 최고 성능", "학술 연구용"],
-            "cons": ["큰 메모리 사용"],
+            "pros": ["한국어 최고 성능", "학술 연구용", "Polyglot 기반"],
+            "cons": ["큰 메모리 사용", "token_type_ids 미지원"],
             "korean_support": 5,
+            "tokenizer_config": {  # 이 부분 추가
+                "supports_token_type_ids": False,
+                "requires_special_tokens": True,
+                "chat_template_needed": True,
+            }
         },
         # 기존 호환성 모델
         "microsoft/DialoGPT-medium": {
@@ -227,16 +309,27 @@ class EvaluatorHeadFinder:
             return "cpu"
 
     def _load_tokenizer(self):
-        """토크나이저 로드"""
+        """토크나이저 로드 - KoAlpaca 호환성 개선"""
         try:
             # Hugging Face 인증 처리
             token = self._get_hf_token()
 
+            # KoAlpaca 모델 특화 설정
+            tokenizer_kwargs = {
+                "trust_remote_code": True,
+                "use_fast": True,
+                "token": token,
+            }
+            
+            # KoAlpaca 모델인 경우 추가 설정
+            if "koalpaca" in self.model_name.lower():
+                tokenizer_kwargs.update({
+                    "add_eos_token": True,
+                    "add_bos_token": True,
+                })
+
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                use_fast=True,
-                token=token,  # 인증 토큰 추가
+                self.model_name, **tokenizer_kwargs
             )
 
             # 패드 토큰 설정
@@ -245,6 +338,12 @@ class EvaluatorHeadFinder:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
                 else:
                     self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+
+            # KoAlpaca 모델의 경우 추가 특수 토큰 설정
+            if "koalpaca" in self.model_name.lower():
+                if not hasattr(self.tokenizer, 'chat_template') or self.tokenizer.chat_template is None:
+                    # 기본 채팅 템플릿 설정
+                    self.tokenizer.chat_template = "{{ bos_token }}{{ message['content'] }}{{ eos_token }}"
 
             logging.info(f"📝 토크나이저 로드 완료: vocab_size={len(self.tokenizer)}")
 
@@ -545,16 +644,13 @@ class EvaluatorHeadFinder:
 
                 # 토큰화 및 길이 제한
                 max_length = min(self.model_config.get("context_length", 2048), 1024)
-                inputs = self.tokenizer(
+                inputs = safe_tokenize(
+                    self.tokenizer,
                     text,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=max_length,
-                    padding=False,
+                    model_name=self.model_name,
+                    model_config=self.model_config,
+                    max_length=max_length
                 )
-
-                # 디바이스로 이동
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 # 빈 입력 체크
                 if inputs["input_ids"].size(1) == 0:
@@ -751,10 +847,13 @@ class EvaluatorHeadFinder:
             try:
                 text = data["text"]
                 max_length = min(self.model_config.get("context_length", 2048), 512)
-                inputs = self.tokenizer(
-                    text, return_tensors="pt", truncation=True, max_length=max_length
+                inputs = safe_tokenize(
+                    self.tokenizer,
+                    text,
+                    model_name=self.model_name,
+                    model_config=self.model_config,
+                    max_length=max_length
                 )
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 if inputs["input_ids"].size(1) == 0:
                     continue
