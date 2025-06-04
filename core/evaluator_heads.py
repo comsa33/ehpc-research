@@ -211,6 +211,8 @@ class EvaluatorHeadFinder:
         fallback = fallback_models.get(original_model, "microsoft/DialoGPT-medium")
         logging.info(f"🔄 Gated 모델 {original_model} → 폴백 모델 {fallback}")
         return fallback
+
+    def _get_optimal_device(self) -> str:
         """최적 디바이스 자동 선택"""
         if torch.cuda.is_available():
             device = f"cuda:{torch.cuda.current_device()}"
