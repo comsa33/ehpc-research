@@ -11,14 +11,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 def safe_tokenize(tokenizer, text, model_name="", model_config=None, **kwargs):
     """
     모델별 호환성을 고려한 안전한 토큰화 함수 (개선 버전)
-    
+
     Args:
         tokenizer: HuggingFace 토크나이저
         text: 토큰화할 텍스트
         model_name: 모델 이름 (특수 처리용)
         model_config: 모델 설정 정보 (ModelConfig에서 가져온)
         **kwargs: 추가 토크나이저 옵션
-    
+
     Returns:
         Dict: 모델이 지원하는 키만 포함된 토큰화 결과
     """
@@ -28,9 +28,9 @@ def safe_tokenize(tokenizer, text, model_name="", model_config=None, **kwargs):
         "truncation": True,
         "padding": False,
         "return_token_type_ids": False,  # 기본적으로 비활성화
-        **kwargs
+        **kwargs,
     }
-    
+
     # ModelConfig 정보가 있으면 우선 사용
     if model_config and "tokenizer_config" in model_config:
         tokenizer_config = model_config["tokenizer_config"]
@@ -40,31 +40,34 @@ def safe_tokenize(tokenizer, text, model_name="", model_config=None, **kwargs):
     else:
         # 폴백: 모델 이름 기반 판단
         model_name_lower = model_name.lower()
-        
+
         if "koalpaca" in model_name_lower or "polyglot" in model_name_lower:
             tokenize_kwargs["return_token_type_ids"] = False
         elif "bert" in model_name_lower:
             tokenize_kwargs["return_token_type_ids"] = True
-        elif any(name in model_name_lower for name in ["gpt", "llama", "qwen", "gemma", "phi"]):
+        elif any(
+            name in model_name_lower
+            for name in ["gpt", "llama", "qwen", "gemma", "phi"]
+        ):
             tokenize_kwargs["return_token_type_ids"] = False
-    
+
     try:
         # 토큰화 실행
         inputs = tokenizer(text, **tokenize_kwargs)
-        
+
         # 모델이 지원하는 키만 필터링
-        supported_keys = {'input_ids', 'attention_mask'}
-        
+        supported_keys = {"input_ids", "attention_mask"}
+
         # token_type_ids 지원 여부에 따라 추가
         if tokenize_kwargs.get("return_token_type_ids", False):
-            supported_keys.add('token_type_ids')
-        
+            supported_keys.add("token_type_ids")
+
         # 필터링된 결과 반환
         filtered_inputs = {k: v for k, v in inputs.items() if k in supported_keys}
-        
+
         logging.debug(f"토큰화 성공: {model_name}, 키: {list(filtered_inputs.keys())}")
         return filtered_inputs
-        
+
     except Exception as e:
         logging.warning(f"토큰화 실패 {model_name}: {e}")
         # 최소한의 안전한 설정으로 재시도
@@ -75,9 +78,9 @@ def safe_tokenize(tokenizer, text, model_name="", model_config=None, **kwargs):
             "return_token_type_ids": False,
             "max_length": kwargs.get("max_length", 512),
         }
-        
+
         inputs = tokenizer(text, **safe_kwargs)
-        return {k: v for k, v in inputs.items() if k in {'input_ids', 'attention_mask'}}
+        return {k: v for k, v in inputs.items() if k in {"input_ids", "attention_mask"}}
 
 
 @dataclass
@@ -128,7 +131,7 @@ class ModelConfig:
                 "supports_token_type_ids": False,
                 "requires_special_tokens": True,
                 "chat_template_needed": False,
-            }
+            },
         },
         "meta-llama/Llama-3.2-3B-Instruct": {
             "params": "3B",
@@ -161,7 +164,7 @@ class ModelConfig:
                 "supports_token_type_ids": False,
                 "requires_special_tokens": True,
                 "chat_template_needed": True,
-            }
+            },
         },
         # 기존 호환성 모델
         "microsoft/DialoGPT-medium": {
@@ -320,13 +323,15 @@ class EvaluatorHeadFinder:
                 "use_fast": True,
                 "token": token,
             }
-            
+
             # KoAlpaca 모델인 경우 추가 설정
             if "koalpaca" in self.model_name.lower():
-                tokenizer_kwargs.update({
-                    "add_eos_token": True,
-                    "add_bos_token": True,
-                })
+                tokenizer_kwargs.update(
+                    {
+                        "add_eos_token": True,
+                        "add_bos_token": True,
+                    }
+                )
 
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name, **tokenizer_kwargs
@@ -341,9 +346,14 @@ class EvaluatorHeadFinder:
 
             # KoAlpaca 모델의 경우 추가 특수 토큰 설정
             if "koalpaca" in self.model_name.lower():
-                if not hasattr(self.tokenizer, 'chat_template') or self.tokenizer.chat_template is None:
+                if (
+                    not hasattr(self.tokenizer, "chat_template")
+                    or self.tokenizer.chat_template is None
+                ):
                     # 기본 채팅 템플릿 설정
-                    self.tokenizer.chat_template = "{{ bos_token }}{{ message['content'] }}{{ eos_token }}"
+                    self.tokenizer.chat_template = (
+                        "{{ bos_token }}{{ message['content'] }}{{ eos_token }}"
+                    )
 
             logging.info(f"📝 토크나이저 로드 완료: vocab_size={len(self.tokenizer)}")
 
@@ -364,7 +374,7 @@ class EvaluatorHeadFinder:
                 "token": token,
                 # Meta Tensor 문제 해결을 위한 설정
                 "torch_dtype": torch.float32,  # 명시적 dtype 설정
-                "low_cpu_mem_usage": False,    # Meta tensor 사용 비활성화
+                "low_cpu_mem_usage": False,  # Meta tensor 사용 비활성화
             }
 
             # 양자화 설정 (CUDA에서만)
@@ -401,7 +411,7 @@ class EvaluatorHeadFinder:
             if "quantization_config" not in model_kwargs:
                 try:
                     # Meta tensor 문제 해결을 위한 안전한 디바이스 이동
-                    if hasattr(self.model, 'to_empty'):
+                    if hasattr(self.model, "to_empty"):
                         # PyTorch 2.0+ 방식
                         self.model = self.model.to_empty(device=self.device)
                         logging.info(f"✅ to_empty()로 디바이스 이동: {self.device}")
@@ -449,7 +459,7 @@ class EvaluatorHeadFinder:
         """Meta tensor 문제를 위한 대안 로딩 방식"""
         try:
             token = self._get_hf_token()
-            
+
             # 가장 안전한 설정으로 재시도
             model_kwargs = {
                 "output_attentions": True,
@@ -459,19 +469,19 @@ class EvaluatorHeadFinder:
                 "device_map": None,  # 수동 디바이스 관리
                 "token": token,
             }
-            
+
             logging.info("🔄 대안 방식으로 모델 로딩 중...")
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name, **model_kwargs
             )
-            
+
             # CPU에서 로드 후 수동으로 이동
             if self.device != "cpu":
                 logging.info(f"📦 CPU에서 로드 후 {self.device}로 이동 중...")
                 self.model = self.model.to(self.device)
-            
+
             logging.info("✅ 대안 방식 로딩 성공")
-            
+
         except Exception as e:
             logging.error(f"❌ 대안 방식도 실패: {e}")
             raise e
@@ -481,8 +491,8 @@ class EvaluatorHeadFinder:
         # 접근 가능한 폴백 모델들 (gated 모델 제외)
         fallback_models = [
             "microsoft/DialoGPT-medium",
-            "gpt2", 
-            "distilgpt2"  # 더 가벼운 옵션 추가
+            "gpt2",
+            "distilgpt2",  # 더 가벼운 옵션 추가
         ]
 
         for fallback in fallback_models:
@@ -649,7 +659,7 @@ class EvaluatorHeadFinder:
                     text,
                     model_name=self.model_name,
                     model_config=self.model_config,
-                    max_length=max_length
+                    max_length=max_length,
                 )
 
                 # 빈 입력 체크
@@ -852,7 +862,7 @@ class EvaluatorHeadFinder:
                     text,
                     model_name=self.model_name,
                     model_config=self.model_config,
-                    max_length=max_length
+                    max_length=max_length,
                 )
 
                 if inputs["input_ids"].size(1) == 0:

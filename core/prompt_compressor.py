@@ -129,7 +129,7 @@ class EHPCCompressor:
             text,
             model_name=self.model_name,
             model_config=self.head_finder.model_config,
-            max_length=effective_max_length
+            max_length=effective_max_length,
         )
 
         # 디바이스로 이동
@@ -461,9 +461,9 @@ class EHPCCompressor:
                 text,
                 model_name=self.model_name,
                 model_config=self.head_finder.model_config,
-                max_length=1024
+                max_length=1024,
             )
-            
+
             inputs = {k: v.to(self.head_finder.device) for k, v in inputs.items()}
             input_tokens = inputs["input_ids"].size(1)
 
@@ -477,19 +477,18 @@ class EHPCCompressor:
                     "eos_token_id": self.head_finder.tokenizer.eos_token_id,
                     "repetition_penalty": 1.1,
                 }
-                
+
                 # KoAlpaca 모델인 경우 추가 설정
                 if "koalpaca" in self.model_name.lower():
-                    generation_kwargs.update({
-                        "top_p": 0.95,
-                        "top_k": 50,
-                        "no_repeat_ngram_size": 3,
-                    })
-                
-                outputs = self.head_finder.model.generate(
-                    **inputs,
-                    **generation_kwargs
-                )
+                    generation_kwargs.update(
+                        {
+                            "top_p": 0.95,
+                            "top_k": 50,
+                            "no_repeat_ngram_size": 3,
+                        }
+                    )
+
+                outputs = self.head_finder.model.generate(**inputs, **generation_kwargs)
 
             response = self.head_finder.tokenizer.decode(
                 outputs[0], skip_special_tokens=True
