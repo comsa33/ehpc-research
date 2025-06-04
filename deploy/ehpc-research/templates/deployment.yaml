@@ -49,4 +49,6 @@ spec:
           value: "/app"
         - name: CUDA_VISIBLE_DEVICES
           value: "0" 
+        - name: HUGGINGFACE_TOKEN
+          value: "{{ .Values.huggingfaceToken }}"
         

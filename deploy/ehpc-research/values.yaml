@@ -15,3 +15,5 @@ image:
 service:
   type: LoadBalancer
   port: 8501
+
+huggingfaceToken: ""

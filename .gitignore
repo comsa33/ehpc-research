@@ -20,3 +20,5 @@ experiment_log.txt
 # 데이터셋 캐시
 .cache/
 datasets/
+
+.env
